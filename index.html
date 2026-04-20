@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Designers AI Tools Chart</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@500&display=swap" rel="stylesheet">
   <script type="importmap">
   {
     "imports": {
@@ -138,9 +140,10 @@
   <script type="module">
     import { createElement as h, Fragment, useState, useEffect, useRef } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { BarChart, Bar, XAxis, YAxis, Cell, LabelList, Customized } from 'recharts';
+    import { BarChart, Bar, XAxis, YAxis, Cell, LabelList, Customized, PieChart, Pie } from 'recharts';
 
     /* ── Layout ── */
+    const MONO   = 'Geist Mono, monospace';
     const CARD   = 637;
     const PAD    = 16;
     const W      = 605;
@@ -158,6 +161,37 @@
       { name: 'Unsanctioned\npersonal use',           value: 12, color: '#000000' },
       { name: 'Internally built\n(mandated)',         value: 8,  color: '#3292ff' },
     ];
+
+    /* ── Pie layout ── */
+    const PIE_W     = CARD;         // full card width
+    const PIE_R     = CARD / 2;     // fills edge-to-edge
+    const PIE_CX    = CARD / 2;
+    const PIE_CY    = 480;          // push center down for gap between labels and arc
+    const PIE_SVG_H = 490;
+
+    const INIT_PIE_DATA = [
+      { name: '1–50',   pct: 12.9, slice: 49, color: '#cdabfe' },
+      { name: '51–500', pct: 23,   slice: 8,  color: '#7ba2ad' },
+      { name: '501–2K', pct: 36.7, slice: 26, color: '#fe7141' },
+      { name: '+2K',    pct: 62.9, slice: 17, color: '#c4ccb8' },
+    ];
+
+    function polarToSVG(angle, r) {
+      const rad = angle * Math.PI / 180;
+      return { x: PIE_CX + r * Math.cos(rad), y: PIE_CY - r * Math.sin(rad) };
+    }
+
+    function getPieSectors(data) {
+      const total = data.reduce((s, d) => s + d.slice, 0);
+      let ang = 180;
+      return data.map(d => {
+        const sweep = (d.slice / total) * 180;
+        const startAngle = ang;
+        const endAngle   = ang - sweep;
+        ang = endAngle;
+        return { ...d, startAngle, endAngle, midAngle: (startAngle + endAngle) / 2 };
+      });
+    }
 
     /* ── Count-up hook ──
        - Toggling active on  → counts from 0 to target
@@ -255,6 +289,87 @@
       );
     }
 
+    /* ── Pie overlays (rendered via Customized on top of arc) ── */
+    function PieDividers({ pieData }) {
+      const sectors = getPieSectors(pieData);
+      const leftX   = polarToSVG(180, PIE_R).x;
+      const rightX  = polarToSVG(0,   PIE_R).x;
+      const divXs   = sectors.slice(0, -1).map(s => polarToSVG(s.endAngle, PIE_R).x);
+      const bndXs   = [leftX, ...divXs, rightX];
+      const elems   = [];
+
+      // Divider lines at segment boundaries
+      sectors.slice(0, -1).forEach((s, i) => {
+        const bp = polarToSVG(s.endAngle, PIE_R);
+        elems.push(h('line', {
+          key: `d${i}`, x1: bp.x, y1: 8, x2: bp.x, y2: bp.y,
+          stroke: 'rgba(0,0,0,0.2)', strokeWidth: 1,
+        }));
+      });
+
+      // Per-column: pct label on top, range label below, left-aligned 8px from left boundary.
+      // Last segment: right-aligned 8px from right boundary to avoid SVG clipping.
+      sectors.forEach((s, i) => {
+        const isLast = i === sectors.length - 1;
+        const tx     = isLast ? bndXs[i + 1] - 8 : bndXs[i] + 8;
+        const anchor = isLast ? 'end' : 'start';
+        elems.push(h('text', {
+          key: `pct${i}`, x: tx, y: 8,
+          textAnchor: anchor, dominantBaseline: 'hanging',
+          fill: '#151515', fontSize: 22, fontWeight: 400,
+          fontFamily: FONT, letterSpacing: -0.8,
+        }, s.pct + '%'));
+        elems.push(h('text', {
+          key: `rng${i}`, x: tx, y: 40,
+          textAnchor: anchor, dominantBaseline: 'hanging',
+          fill: 'rgba(0,0,0,0.45)', fontSize: 11,
+          fontFamily: MONO, fontWeight: 500, letterSpacing: 0.5,
+        }, s.name));
+      });
+
+      return h('g', null, ...elems);
+    }
+
+    /* ── Pie chart card ── */
+    function PieChartCard({ pieData, pieTitle }) {
+      return h('div', {
+        style: { background: '#fff', width: CARD,
+                 display: 'flex', flexDirection: 'column', gap: 16,
+                 paddingTop: PAD, paddingBottom: PAD }
+      },
+        h('div', { style: { display: 'flex', alignItems: 'flex-start',
+            justifyContent: 'space-between', paddingBottom: 4,
+            paddingLeft: PAD, paddingRight: PAD } },
+          h('h2', { style: { fontSize: 24, fontWeight: 500, fontFamily: FONT,
+              color: '#000', letterSpacing: -0.96, lineHeight: 1.2,
+              margin: 0, maxWidth: 380 } }, pieTitle),
+          h('span', { style: { fontSize: 11, fontFamily: MONO, fontWeight: 500,
+              color: 'rgba(0,0,0,0.4)', letterSpacing: 0.8, marginTop: 5,
+              flexShrink: 0 } }, 'COMPANY SIZE'),
+        ),
+        h(PieChart, {
+          width: PIE_W, height: PIE_SVG_H,
+          margin: { top: 0, right: 0, bottom: 0, left: 0 },
+        },
+          h(Pie, {
+            data: pieData, dataKey: 'slice',
+            startAngle: 180, endAngle: 0,
+            cx: PIE_CX, cy: PIE_CY,
+            outerRadius: PIE_R, innerRadius: 0,
+            isAnimationActive: false,
+            stroke: 'none', strokeWidth: 0,
+          },
+            pieData.map((entry, i) => h(Cell, { key: i, fill: entry.color, stroke: 'none' }))
+          ),
+          h(Customized, { component: () => h(PieDividers, { pieData }) })
+        ),
+        h('p', { style: { fontSize: 14, fontWeight: 500, fontFamily: FONT,
+            color: 'rgba(0,0,0,0.6)', letterSpacing: -0.14, lineHeight: 1.2,
+            paddingLeft: PAD, paddingRight: PAD } },
+          'Source: Designer Fund survey of 958 designers, Q1 2026')
+      );
+    }
+
     /* ── Chart card ── */
     function Chart({ data, title, animated, animDuration }) {
       const maxVal = Math.max(...data.map(d => d.value));
@@ -308,7 +423,8 @@
       );
     }
 
-    function Panel({ data, title, setTitle, animated, setAnimated, animDuration, setAnimDuration, updateRow, open, setOpen }) {
+    function Panel({ data, title, setTitle, animated, setAnimated, animDuration, setAnimDuration, updateRow,
+                     pieData, pieTitle, setPieTitle, updatePieRow, open, setOpen }) {
       return h('div', { className: 'panel' },
         /* Header */
         h('div', { className: 'panel-header', onClick: () => setOpen(o => !o) },
@@ -346,9 +462,9 @@
             ),
           ),
 
-          /* Data rows */
+          /* Bar data rows */
           h('div', null,
-            h('div', { className: 'panel-section-label' }, 'Data'),
+            h('div', { className: 'panel-section-label' }, 'Bar Data'),
             data.map((row, i) =>
               h('div', { key: i, className: 'data-row' },
                 h('div', { className: 'data-row-top' },
@@ -367,6 +483,36 @@
                 )
               )
             )
+          ),
+
+          /* Pie title */
+          h('div', null,
+            h('div', { className: 'panel-section-label' }, 'Pie Chart Title'),
+            h('input', { className: 'text-input', value: pieTitle,
+              onChange: e => setPieTitle(e.target.value) }),
+          ),
+
+          /* Pie data rows */
+          h('div', null,
+            h('div', { className: 'panel-section-label' }, 'Pie Data'),
+            pieData.map((row, i) =>
+              h('div', { key: i, className: 'data-row' },
+                h('div', { className: 'data-row-top' },
+                  h(ColorSwatch, { color: row.color, onChange: c => updatePieRow(i, 'color', c) }),
+                  h('span', { className: 'ctrl-label', title: row.name }, row.name),
+                  h('input', { className: 'num-input', type: 'number', min: 0, max: 100, step: 0.1,
+                    value: row.pct,
+                    onChange: e => updatePieRow(i, 'pct', +e.target.value) }),
+                  h('span', { style: { fontSize: 12, color: '#aaa', flexShrink: 0 } }, '%'),
+                ),
+                h('div', { className: 'data-row-slider' },
+                  h('span', { style: { fontSize: 11, color: '#aaa', flexShrink: 0 } }, 'size'),
+                  h('input', { type: 'range', min: 1, max: 100,
+                    value: row.slice,
+                    onChange: e => updatePieRow(i, 'slice', +e.target.value) }),
+                )
+              )
+            )
           )
         )
       );
@@ -374,20 +520,30 @@
 
     /* ── App root ── */
     function App() {
-      const [data, setData]           = useState(INIT_DATA);
-      const [title, setTitle]         = useState("How designers' AI tools are paid for");
-      const [animated, setAnimated]   = useState(true);
+      const [data, setData]                 = useState(INIT_DATA);
+      const [title, setTitle]               = useState("How designers' AI tools are paid for");
+      const [animated, setAnimated]         = useState(true);
       const [animDuration, setAnimDuration] = useState(600);
-      const [open, setOpen]           = useState(true);
+      const [pieData, setPieData]           = useState(INIT_PIE_DATA);
+      const [pieTitle, setPieTitle]         = useState('% of designers using internally built AI tools');
+      const [open, setOpen]                 = useState(true);
 
       function updateRow(i, key, val) {
         setData(d => d.map((row, j) => j === i ? { ...row, [key]: val } : row));
       }
+      function updatePieRow(i, key, val) {
+        setPieData(d => d.map((row, j) => j === i ? { ...row, [key]: val } : row));
+      }
 
       return h(Fragment, null,
-        h(Chart, { data, title, animated, animDuration }),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
+          h(Chart, { data, title, animated, animDuration }),
+          h(PieChartCard, { pieData, pieTitle }),
+        ),
         h(Panel, { data, title, setTitle, animated, setAnimated,
-                   animDuration, setAnimDuration, updateRow, open, setOpen })
+                   animDuration, setAnimDuration, updateRow,
+                   pieData, pieTitle, setPieTitle, updatePieRow,
+                   open, setOpen })
       );
     }
 
