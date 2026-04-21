@@ -35,10 +35,20 @@
     }
 
     /* ── Panel ── */
-    .panel {
+    /* panels wrapper */
+    .panels-container {
       position: fixed;
       top: 20px;
       right: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+      z-index: 100;
+    }
+
+    .panel {
       width: 268px;
       background: #fff;
       border-radius: 12px;
@@ -47,7 +57,6 @@
       font-size: 13px;
       color: #111;
       overflow: hidden;
-      z-index: 100;
     }
     .panel-header {
       display: flex;
@@ -233,6 +242,79 @@
       return displayed;
     }
 
+    /* ── Float count-up (1 decimal place) for pie labels ── */
+    function useFloatCountUp(target, duration, active) {
+      const [displayed, setDisplayed] = useState(target);
+      const rafRef       = useRef(null);
+      const fromRef      = useRef(target);
+      const wasActiveRef = useRef(false);
+
+      useEffect(() => {
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        if (!active) {
+          wasActiveRef.current = false;
+          fromRef.current = target;
+          setDisplayed(target);
+          return;
+        }
+        const from = wasActiveRef.current ? fromRef.current : 0;
+        wasActiveRef.current = true;
+        const t0 = performance.now();
+        function tick(now) {
+          const t     = Math.min((now - t0) / duration, 1);
+          const eased = 1 - Math.pow(1 - t, 3);
+          const val   = Math.round((from + (target - from) * eased) * 10) / 10;
+          setDisplayed(val);
+          if (t < 1) rafRef.current = requestAnimationFrame(tick);
+          else        fromRef.current = target;
+        }
+        rafRef.current = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(rafRef.current);
+      }, [target, duration, active]);
+
+      return displayed;
+    }
+
+    /* ── Animated pie percentage label ── */
+    function AnimatedPiePct({ pct, x, y, anchor, active, animDuration }) {
+      const val = useFloatCountUp(pct, animDuration, active);
+      const str = Number.isInteger(val) ? val + '%' : val.toFixed(1) + '%';
+      return h('text', {
+        x, y, textAnchor: anchor, dominantBaseline: 'hanging',
+        fill: '#151515', fontSize: 24, fontWeight: 400,
+        fontFamily: FONT, letterSpacing: -1.44,
+      }, str);
+    }
+
+    /* ── Pie sweep animation hook ── */
+    function useSweepProgress(duration, trigger) {
+      const [progress, setProgress] = useState(0);
+      useEffect(() => {
+        setProgress(0);
+        let raf;
+        const t0 = performance.now();
+        function tick(now) {
+          const t = Math.min((now - t0) / duration, 1);
+          const eased = 1 - Math.pow(1 - t, 4); // ease-out quartic
+          setProgress(eased);
+          if (t < 1) raf = requestAnimationFrame(tick);
+        }
+        raf = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(raf);
+      }, [trigger, duration]);
+      return progress;
+    }
+
+    /* ── Pie sector SVG path ── */
+    function sectorPath(cx, cy, r, ang1, ang2) {
+      const toR = a => a * Math.PI / 180;
+      const sx = cx + r * Math.cos(toR(ang1)), sy = cy - r * Math.sin(toR(ang1));
+      const ex = cx + r * Math.cos(toR(ang2)), ey = cy - r * Math.sin(toR(ang2));
+      const large = (ang1 - ang2) > 180 ? 1 : 0;
+      // sweep-flag=1 (clockwise on screen) draws the arc through the TOP of the circle
+      return `M ${cx} ${cy} L ${sx.toFixed(3)} ${sy.toFixed(3)} A ${r} ${r} 0 ${large} 1 ${ex.toFixed(3)} ${ey.toFixed(3)} Z`;
+    }
+
     /* ── Chart sub-components ── */
     function YTick({ x, y, payload }) {
       const lines = payload.value.split('\n');
@@ -291,55 +373,86 @@
     }
 
     /* ── Pie overlays (rendered via Customized on top of arc) ── */
-    function PieDividers({ pieData }) {
+    function PieDividers({ pieData, labelsReady, animDuration }) {
       const sectors = getPieSectors(pieData);
       const leftX   = polarToSVG(180, PIE_R).x;
       const rightX  = polarToSVG(0,   PIE_R).x;
       const divXs   = sectors.slice(0, -1).map(s => polarToSVG(s.endAngle, PIE_R).x);
       const bndXs   = [leftX, ...divXs, rightX];
-      const elems   = [];
 
-      // Lines: left edge + inner boundaries except the last one (for +2K, use right boundary instead)
+      const lineElems = [];
+      // Lines: left edge + inner boundaries (last segment gets right boundary instead)
       const innerAngles = [180, ...sectors.slice(0, -2).map(s => s.endAngle)];
       innerAngles.forEach((angle, i) => {
         const bp = polarToSVG(angle, PIE_R);
-        elems.push(h('line', {
+        lineElems.push(h('line', {
           key: `d${i}`, x1: bp.x, y1: 8, x2: bp.x, y2: bp.y,
           stroke: 'rgba(0,0,0,0.2)', strokeWidth: 1,
         }));
       });
-      // +2K: right boundary line (to the right of the label)
       const rightBp = polarToSVG(0, PIE_R);
-      elems.push(h('line', {
+      lineElems.push(h('line', {
         key: 'dright', x1: rightBp.x, y1: 8, x2: rightBp.x, y2: rightBp.y,
         stroke: 'rgba(0,0,0,0.2)', strokeWidth: 1,
       }));
 
-      // Per-column: pct on top, range below. Left-aligned 8px from left boundary.
-      // Last segment (+2K): right-aligned 8px from right boundary (line is on the right).
-      sectors.forEach((s, i) => {
+      // Range labels (static, fade with lines)
+      const rangeElems = sectors.map((s, i) => {
         const isLast = i === sectors.length - 1;
         const tx     = isLast ? bndXs[i + 1] - 8 : bndXs[i] + 8;
         const anchor = isLast ? 'end' : 'start';
-        elems.push(h('text', {
-          key: `pct${i}`, x: tx, y: 8,
-          textAnchor: anchor, dominantBaseline: 'hanging',
-          fill: '#151515', fontSize: 24, fontWeight: 400,
-          fontFamily: FONT, letterSpacing: -1.44,
-        }, s.pct + '%'));
-        elems.push(h('text', {
+        return h('text', {
           key: `rng${i}`, x: tx, y: 41,
           textAnchor: anchor, dominantBaseline: 'hanging',
           fill: 'rgba(0,0,0,0.6)', fontSize: 12,
           fontFamily: MONO, fontWeight: 500, letterSpacing: 0.5,
-        }, s.name));
+        }, s.name);
       });
 
-      return h('g', null, ...elems);
+      // Animated pct labels (own components for hook usage)
+      const pctElems = sectors.map((s, i) => {
+        const isLast = i === sectors.length - 1;
+        const tx     = isLast ? bndXs[i + 1] - 8 : bndXs[i] + 8;
+        const anchor = isLast ? 'end' : 'start';
+        return h(AnimatedPiePct, {
+          key: `pct${i}`, pct: s.pct, x: tx, y: 8,
+          anchor, active: labelsReady, animDuration,
+        });
+      });
+
+      const fadeStyle = {
+        opacity: labelsReady ? 1 : 0,
+        transition: 'opacity 0.35s ease',
+      };
+
+      return h('g', null,
+        h('g', { style: fadeStyle }, ...lineElems, ...rangeElems),
+        ...pctElems,
+      );
     }
 
     /* ── Pie chart card ── */
-    function PieChartCard({ pieData, pieTitle }) {
+    function PieChartCard({ pieData, pieTitle, animated, animDuration }) {
+      const [sweepTrigger, setSweepTrigger] = useState(0);
+      const [labelsReady,  setLabelsReady]  = useState(!animated);
+      const durationRef = useRef(animDuration);
+      useEffect(() => { durationRef.current = animDuration; }, [animDuration]);
+
+      useEffect(() => {
+        if (!animated) { setLabelsReady(true); return; }
+        setSweepTrigger(t => t + 1);
+        setLabelsReady(false);
+        const t = setTimeout(() => setLabelsReady(true), durationRef.current + 80);
+        return () => clearTimeout(t);
+      }, [animated]); // eslint-disable-line
+
+      // Custom RAF sweep — progress 0→1, drives sector drawing
+      const rawProgress = useSweepProgress(animDuration, sweepTrigger);
+      const progress    = animated ? rawProgress : 1;
+      const sweepEnd    = 180 * (1 - progress); // angle front, starts at 180° → 0°
+
+      const sectors = getPieSectors(pieData);
+
       return h('div', {
         style: { background: '#fff', width: CARD,
                  display: 'flex', flexDirection: 'column', gap: 16,
@@ -355,22 +468,22 @@
               color: 'rgba(0,0,0,0.4)', letterSpacing: 0.8, marginTop: 6,
               flexShrink: 0 } }, 'COMPANY SIZE'),
         ),
-        h(PieChart, {
+        h('svg', {
           width: PIE_W, height: PIE_SVG_H,
-          margin: { top: 0, right: 0, bottom: 0, left: 0 },
-          style: { overflow: 'visible' },
+          style: { overflow: 'visible', display: 'block' },
         },
-          h(Pie, {
-            data: pieData, dataKey: 'slice',
-            startAngle: 180, endAngle: 0,
-            cx: PIE_CX, cy: PIE_CY,
-            outerRadius: PIE_R, innerRadius: 0,
-            isAnimationActive: false,
-            stroke: 'none', strokeWidth: 0,
-          },
-            pieData.map((entry, i) => h(Cell, { key: i, fill: entry.color, stroke: 'none' }))
-          ),
-          h(Customized, { component: () => h(PieDividers, { pieData }) })
+          // Animate each sector: draw from its startAngle up to the sweep front
+          sectors.map((s, i) => {
+            const drawEnd = Math.max(s.endAngle, sweepEnd);
+            if (drawEnd >= s.startAngle - 0.001) return null; // not reached yet
+            return h('path', {
+              key: i,
+              d: sectorPath(PIE_CX, PIE_CY, PIE_R, s.startAngle, drawEnd),
+              fill: s.color,
+            });
+          }),
+          // Dividers + labels (fade in after sweep)
+          h(PieDividers, { pieData, labelsReady, animDuration }),
         ),
         h('p', { style: { fontSize: 14, fontWeight: 500, fontFamily: FONT,
             color: 'rgba(0,0,0,0.6)', letterSpacing: -0.14, lineHeight: 1.2,
@@ -432,110 +545,120 @@
       );
     }
 
-    function Panel({ data, title, setTitle, animated, setAnimated, animDuration, setAnimDuration, updateRow,
-                     pieData, pieTitle, setPieTitle, updatePieRow, open, setOpen }) {
+    /* ── Shared panel primitives ── */
+    function PanelShell({ title, open, setOpen, children }) {
       return h('div', { className: 'panel' },
-        /* Header */
         h('div', { className: 'panel-header', onClick: () => setOpen(o => !o) },
-          h('span', null, '⚙ Chart Settings'),
+          h('span', null, title),
           h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'none' },
             h('path', { d: open ? 'M2 9l5-5 5 5' : 'M2 5l5 5 5-5',
               stroke: '#000', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' })
           )
         ),
+        open && h('div', { className: 'panel-body' }, ...children)
+      );
+    }
 
-        open && h('div', { className: 'panel-body' },
+    function AnimSection({ animated, setAnimated, animDuration, setAnimDuration }) {
+      return h('div', null,
+        h('div', { className: 'panel-section-label' }, 'Animation'),
+        h('div', { className: 'ctrl-row', style: { marginBottom: animated ? 8 : 0 } },
+          h('span', { className: 'ctrl-label' }, 'Enable'),
+          h(Toggle, { checked: animated, onChange: setAnimated }),
+        ),
+        animated && h('div', { className: 'ctrl-row' },
+          h('span', { className: 'ctrl-label' }, 'Duration'),
+          h('input', { type: 'range', min: 200, max: 2000, step: 100,
+            value: animDuration, onChange: e => setAnimDuration(+e.target.value) }),
+          h('span', { className: 'range-val' }, animDuration + 'ms'),
+        ),
+      );
+    }
 
-          /* General */
-          h('div', null,
-            h('div', { className: 'panel-section-label' }, 'General'),
-            h('div', { className: 'ctrl-row', style: { marginBottom: 8 } },
-              h('span', { className: 'ctrl-label' }, 'Title'),
-            ),
-            h('input', { className: 'text-input', value: title,
-              onChange: e => setTitle(e.target.value) }),
+    /* ── Bar chart panel ── */
+    function BarPanel({ data, title, setTitle, animated, setAnimated, animDuration, setAnimDuration, updateRow, open, setOpen }) {
+      return h(PanelShell, { title: '⚙ Bar Chart', open, setOpen },
+        h('div', null,
+          h('div', { className: 'panel-section-label' }, 'General'),
+          h('div', { className: 'ctrl-row', style: { marginBottom: 8 } },
+            h('span', { className: 'ctrl-label' }, 'Title'),
           ),
-
-          /* Animation */
-          h('div', null,
-            h('div', { className: 'panel-section-label' }, 'Animation'),
-            h('div', { className: 'ctrl-row', style: { marginBottom: animated ? 8 : 0 } },
-              h('span', { className: 'ctrl-label' }, 'Enable'),
-              h(Toggle, { checked: animated, onChange: setAnimated }),
-            ),
-            animated && h('div', { className: 'ctrl-row' },
-              h('span', { className: 'ctrl-label' }, 'Duration'),
-              h('input', { type: 'range', min: 200, max: 2000, step: 100,
-                value: animDuration, onChange: e => setAnimDuration(+e.target.value) }),
-              h('span', { className: 'range-val' }, animDuration + 'ms'),
-            ),
-          ),
-
-          /* Bar data rows */
-          h('div', null,
-            h('div', { className: 'panel-section-label' }, 'Bar Data'),
-            data.map((row, i) =>
-              h('div', { key: i, className: 'data-row' },
-                h('div', { className: 'data-row-top' },
-                  h(ColorSwatch, { color: row.color, onChange: c => updateRow(i, 'color', c) }),
-                  h('span', { className: 'ctrl-label', title: row.name.replace('\n', ' ') },
-                    row.name.split('\n')[0]),
-                  h('input', { className: 'num-input', type: 'number', min: 0, max: 100,
-                    value: row.value,
-                    onChange: e => updateRow(i, 'value', Math.min(100, Math.max(0, +e.target.value))) }),
-                  h('span', { style: { fontSize: 12, color: '#aaa', flexShrink: 0 } }, '%'),
-                ),
-                h('div', { className: 'data-row-slider' },
-                  h('input', { type: 'range', min: 0, max: 100,
-                    value: row.value,
-                    onChange: e => updateRow(i, 'value', +e.target.value) }),
-                )
-              )
-            )
-          ),
-
-          /* Pie title */
-          h('div', null,
-            h('div', { className: 'panel-section-label' }, 'Pie Chart Title'),
-            h('input', { className: 'text-input', value: pieTitle,
-              onChange: e => setPieTitle(e.target.value) }),
-          ),
-
-          /* Pie data rows */
-          h('div', null,
-            h('div', { className: 'panel-section-label' }, 'Pie Data'),
-            pieData.map((row, i) =>
-              h('div', { key: i, className: 'data-row' },
-                h('div', { className: 'data-row-top' },
-                  h(ColorSwatch, { color: row.color, onChange: c => updatePieRow(i, 'color', c) }),
-                  h('span', { className: 'ctrl-label', title: row.name }, row.name),
-                  h('input', { className: 'num-input', type: 'number', min: 0, max: 100, step: 0.1,
-                    value: row.pct,
-                    onChange: e => updatePieRow(i, 'pct', +e.target.value) }),
-                  h('span', { style: { fontSize: 12, color: '#aaa', flexShrink: 0 } }, '%'),
-                ),
-                h('div', { className: 'data-row-slider' },
-                  h('span', { style: { fontSize: 11, color: '#aaa', flexShrink: 0 } }, 'size'),
-                  h('input', { type: 'range', min: 1, max: 100,
-                    value: row.slice,
-                    onChange: e => updatePieRow(i, 'slice', +e.target.value) }),
-                )
+          h('input', { className: 'text-input', value: title,
+            onChange: e => setTitle(e.target.value) }),
+        ),
+        h(AnimSection, { animated, setAnimated, animDuration, setAnimDuration }),
+        h('div', null,
+          h('div', { className: 'panel-section-label' }, 'Data'),
+          data.map((row, i) =>
+            h('div', { key: i, className: 'data-row' },
+              h('div', { className: 'data-row-top' },
+                h(ColorSwatch, { color: row.color, onChange: c => updateRow(i, 'color', c) }),
+                h('span', { className: 'ctrl-label', title: row.name.replace('\n', ' ') },
+                  row.name.split('\n')[0]),
+                h('input', { className: 'num-input', type: 'number', min: 0, max: 100,
+                  value: row.value,
+                  onChange: e => updateRow(i, 'value', Math.min(100, Math.max(0, +e.target.value))) }),
+                h('span', { style: { fontSize: 12, color: '#aaa', flexShrink: 0 } }, '%'),
+              ),
+              h('div', { className: 'data-row-slider' },
+                h('input', { type: 'range', min: 0, max: 100,
+                  value: row.value,
+                  onChange: e => updateRow(i, 'value', +e.target.value) }),
               )
             )
           )
-        )
+        ),
+      );
+    }
+
+    /* ── Pie chart panel ── */
+    function PiePanel({ pieData, pieTitle, setPieTitle, animated, setAnimated, animDuration, setAnimDuration, updatePieRow, open, setOpen }) {
+      return h(PanelShell, { title: '⚙ Pie Chart', open, setOpen },
+        h('div', null,
+          h('div', { className: 'panel-section-label' }, 'General'),
+          h('div', { className: 'ctrl-row', style: { marginBottom: 8 } },
+            h('span', { className: 'ctrl-label' }, 'Title'),
+          ),
+          h('input', { className: 'text-input', value: pieTitle,
+            onChange: e => setPieTitle(e.target.value) }),
+        ),
+        h(AnimSection, { animated, setAnimated, animDuration, setAnimDuration }),
+        h('div', null,
+          h('div', { className: 'panel-section-label' }, 'Data'),
+          pieData.map((row, i) =>
+            h('div', { key: i, className: 'data-row' },
+              h('div', { className: 'data-row-top' },
+                h(ColorSwatch, { color: row.color, onChange: c => updatePieRow(i, 'color', c) }),
+                h('span', { className: 'ctrl-label', title: row.name }, row.name),
+                h('input', { className: 'num-input', type: 'number', min: 0, max: 100, step: 0.1,
+                  value: row.pct,
+                  onChange: e => updatePieRow(i, 'pct', +e.target.value) }),
+                h('span', { style: { fontSize: 12, color: '#aaa', flexShrink: 0 } }, '%'),
+              ),
+              h('div', { className: 'data-row-slider' },
+                h('span', { style: { fontSize: 11, color: '#aaa', flexShrink: 0 } }, 'size'),
+                h('input', { type: 'range', min: 1, max: 100,
+                  value: row.slice,
+                  onChange: e => updatePieRow(i, 'slice', +e.target.value) }),
+              )
+            )
+          )
+        ),
       );
     }
 
     /* ── App root ── */
     function App() {
-      const [data, setData]                 = useState(INIT_DATA);
-      const [title, setTitle]               = useState("How designers' AI tools are paid for");
-      const [animated, setAnimated]         = useState(true);
-      const [animDuration, setAnimDuration] = useState(600);
-      const [pieData, setPieData]           = useState(INIT_PIE_DATA);
-      const [pieTitle, setPieTitle]         = useState('% of designers using internally built AI tools');
-      const [open, setOpen]                 = useState(true);
+      const [data, setData]                       = useState(INIT_DATA);
+      const [title, setTitle]                     = useState("How designers' AI tools are paid for");
+      const [barAnimated, setBarAnimated]         = useState(true);
+      const [barAnimDur, setBarAnimDur]           = useState(600);
+      const [pieData, setPieData]                 = useState(INIT_PIE_DATA);
+      const [pieTitle, setPieTitle]               = useState('% of designers using internally built AI tools');
+      const [pieAnimated, setPieAnimated]         = useState(true);
+      const [pieAnimDur, setPieAnimDur]           = useState(600);
+      const [barOpen, setBarOpen]                 = useState(true);
+      const [pieOpen, setPieOpen]                 = useState(true);
 
       function updateRow(i, key, val) {
         setData(d => d.map((row, j) => j === i ? { ...row, [key]: val } : row));
@@ -546,13 +669,19 @@
 
       return h(Fragment, null,
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16 } },
-          h(Chart, { data, title, animated, animDuration }),
-          h(PieChartCard, { pieData, pieTitle }),
+          h(Chart, { data, title, animated: barAnimated, animDuration: barAnimDur }),
+          h(PieChartCard, { pieData, pieTitle, animated: pieAnimated, animDuration: pieAnimDur }),
         ),
-        h(Panel, { data, title, setTitle, animated, setAnimated,
-                   animDuration, setAnimDuration, updateRow,
-                   pieData, pieTitle, setPieTitle, updatePieRow,
-                   open, setOpen })
+        h('div', { className: 'panels-container' },
+          h(BarPanel, { data, title, setTitle,
+                        animated: barAnimated, setAnimated: setBarAnimated,
+                        animDuration: barAnimDur, setAnimDuration: setBarAnimDur,
+                        updateRow, open: barOpen, setOpen: setBarOpen }),
+          h(PiePanel, { pieData, pieTitle, setPieTitle,
+                        animated: pieAnimated, setAnimated: setPieAnimated,
+                        animDuration: pieAnimDur, setAnimDuration: setPieAnimDur,
+                        updatePieRow, open: pieOpen, setOpen: setPieOpen }),
+        )
       );
     }
 
