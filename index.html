@@ -163,9 +163,10 @@
     ];
 
     /* ── Pie layout ── */
-    const PIE_W     = CARD;         // full card width
-    const PIE_R     = CARD / 2;     // fills edge-to-edge
-    const PIE_CX    = CARD / 2;
+    const PIE_PAD   = 24;
+    const PIE_W     = CARD;                              // SVG spans full card width
+    const PIE_R     = (CARD - 2 * PIE_PAD) / 2;         // arc spans padded area (24px inset each side)
+    const PIE_CX    = CARD / 2;                          // symmetric center
     const PIE_CY    = 480;          // push center down for gap between labels and arc
     const PIE_SVG_H = 490;
 
@@ -298,17 +299,24 @@
       const bndXs   = [leftX, ...divXs, rightX];
       const elems   = [];
 
-      // Divider lines at segment boundaries
-      sectors.slice(0, -1).forEach((s, i) => {
-        const bp = polarToSVG(s.endAngle, PIE_R);
+      // Lines: left edge + inner boundaries except the last one (for +2K, use right boundary instead)
+      const innerAngles = [180, ...sectors.slice(0, -2).map(s => s.endAngle)];
+      innerAngles.forEach((angle, i) => {
+        const bp = polarToSVG(angle, PIE_R);
         elems.push(h('line', {
           key: `d${i}`, x1: bp.x, y1: 8, x2: bp.x, y2: bp.y,
           stroke: 'rgba(0,0,0,0.2)', strokeWidth: 1,
         }));
       });
+      // +2K: right boundary line (to the right of the label)
+      const rightBp = polarToSVG(0, PIE_R);
+      elems.push(h('line', {
+        key: 'dright', x1: rightBp.x, y1: 8, x2: rightBp.x, y2: rightBp.y,
+        stroke: 'rgba(0,0,0,0.2)', strokeWidth: 1,
+      }));
 
-      // Per-column: pct label on top, range label below, left-aligned 8px from left boundary.
-      // Last segment: right-aligned 8px from right boundary to avoid SVG clipping.
+      // Per-column: pct on top, range below. Left-aligned 8px from left boundary.
+      // Last segment (+2K): right-aligned 8px from right boundary (line is on the right).
       sectors.forEach((s, i) => {
         const isLast = i === sectors.length - 1;
         const tx     = isLast ? bndXs[i + 1] - 8 : bndXs[i] + 8;
@@ -316,13 +324,13 @@
         elems.push(h('text', {
           key: `pct${i}`, x: tx, y: 8,
           textAnchor: anchor, dominantBaseline: 'hanging',
-          fill: '#151515', fontSize: 22, fontWeight: 400,
-          fontFamily: FONT, letterSpacing: -0.8,
+          fill: '#151515', fontSize: 24, fontWeight: 400,
+          fontFamily: FONT, letterSpacing: -1.44,
         }, s.pct + '%'));
         elems.push(h('text', {
-          key: `rng${i}`, x: tx, y: 40,
+          key: `rng${i}`, x: tx, y: 41,
           textAnchor: anchor, dominantBaseline: 'hanging',
-          fill: 'rgba(0,0,0,0.45)', fontSize: 11,
+          fill: 'rgba(0,0,0,0.6)', fontSize: 12,
           fontFamily: MONO, fontWeight: 500, letterSpacing: 0.5,
         }, s.name));
       });
@@ -335,21 +343,22 @@
       return h('div', {
         style: { background: '#fff', width: CARD,
                  display: 'flex', flexDirection: 'column', gap: 16,
-                 paddingTop: PAD, paddingBottom: PAD }
+                 paddingTop: PIE_PAD, paddingBottom: PIE_PAD }
       },
         h('div', { style: { display: 'flex', alignItems: 'flex-start',
             justifyContent: 'space-between', paddingBottom: 4,
-            paddingLeft: PAD, paddingRight: PAD } },
-          h('h2', { style: { fontSize: 24, fontWeight: 500, fontFamily: FONT,
-              color: '#000', letterSpacing: -0.96, lineHeight: 1.2,
-              margin: 0, maxWidth: 380 } }, pieTitle),
-          h('span', { style: { fontSize: 11, fontFamily: MONO, fontWeight: 500,
-              color: 'rgba(0,0,0,0.4)', letterSpacing: 0.8, marginTop: 5,
+            paddingLeft: PIE_PAD, paddingRight: PIE_PAD } },
+          h('h2', { style: { fontSize: 32, fontWeight: 500, fontFamily: FONT,
+              color: '#000', letterSpacing: -1.28, lineHeight: 1.1,
+              margin: 0, maxWidth: 340 } }, pieTitle),
+          h('span', { style: { fontSize: 14, fontFamily: MONO, fontWeight: 500,
+              color: 'rgba(0,0,0,0.4)', letterSpacing: 0.8, marginTop: 6,
               flexShrink: 0 } }, 'COMPANY SIZE'),
         ),
         h(PieChart, {
           width: PIE_W, height: PIE_SVG_H,
           margin: { top: 0, right: 0, bottom: 0, left: 0 },
+          style: { overflow: 'visible' },
         },
           h(Pie, {
             data: pieData, dataKey: 'slice',
@@ -365,7 +374,7 @@
         ),
         h('p', { style: { fontSize: 14, fontWeight: 500, fontFamily: FONT,
             color: 'rgba(0,0,0,0.6)', letterSpacing: -0.14, lineHeight: 1.2,
-            paddingLeft: PAD, paddingRight: PAD } },
+            paddingLeft: PIE_PAD, paddingRight: PIE_PAD } },
           'Source: Designer Fund survey of 958 designers, Q1 2026')
       );
     }
